@@ -30,6 +30,7 @@
 
 #define LIGHT_LED_OFF   0
 #define LIGHT_LED_FULL  255
+#define LIGHT_LED_DEFAULT 40
 
 #define LIGHT_PATH_BASE "/sys/class"
 #define LIGHT_ID_BACKLIGHT_PATH                         \
@@ -41,7 +42,7 @@
 #define LIGHT_ID_KEYBOARD_PATH                          \
     LIGHT_PATH_BASE"/keyboard-backlight/brightness"
 #define LIGHT_ID_BUTTONS_PATH                           \
-    LIGHT_PATH_BASE"/button-backlight/brightness"
+	LIGHT_PATH_BASE"/leds/intel_keypad_led/brightness"
 #define LIGHT_ID_BATTERY_PATH                           \
     LIGHT_PATH_BASE"/battery-backlight/brightness"
 #define LIGHT_ID_NOTIFICATIONS_PATH                     \
@@ -161,7 +162,7 @@ static int set_light_buttons(struct light_device_t *dev,
     int ret;
 
     return write_brightness(context->fds.buttons,
-                            on ? LIGHT_LED_FULL : LIGHT_LED_OFF);
+			on ? LIGHT_LED_DEFAULT : LIGHT_LED_OFF);
 }
 
 static int set_light_battery(struct light_device_t *dev,
