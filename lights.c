@@ -21,16 +21,19 @@
 #include <unistd.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #include <sys/ioctl.h>
 #include <sys/types.h>
 
 #include <cutils/log.h>
 #include <hardware/lights.h>
+#include <linux/input.h>
+
+/* #ifdef LIGHT_BUTTONS_AUTO_POWEROFF */
 
 #define LIGHT_LED_OFF   0
 #define LIGHT_LED_FULL  255
-#define LIGHT_LED_DEFAULT 40
 
 #define LIGHT_PATH_BASE "/sys/class"
 #define LIGHT_ID_BACKLIGHT_PATH                         \
@@ -50,13 +53,47 @@
 #define LIGHT_ID_ATTENTION_PATH                         \
     LIGHT_PATH_BASE"/attention-baklight/brightness"
 
-
 #define BRIGHT_MAX_BAR      255
 #define bright_to_intensity(__max, __br, __its)     \
         do {                                        \
                 __its = __max * __br;      \
                 __its = __its / BRIGHT_MAX_BAR;     \
         } while (0)
+
+#define WAKE_EVENT_MAX		8
+#define WAKE_KEY_MAX		32
+#define KEY_ANY			(KEY_MAX+0x1)
+
+struct light_wake_event {
+	char	*file;
+	int	type;
+	int	key[WAKE_KEY_MAX];
+	int	fd;
+};
+struct light_info {
+	char *name;
+	int fd;
+	unsigned char brightness;
+	unsigned char brightness_status;
+	int need_update;
+	int need_auto_off;
+	int auto_off_time;
+	pthread_mutex_t lock;
+	pthread_cond_t  cond;
+	struct light_wake_event events[WAKE_EVENT_MAX];
+};
+
+#ifdef LIGHT_BUTTONS_AUTO_POWEROFF
+#define TOUCH_KEY_EVENT_PATH "/dev/input/event1"
+static struct light_info button_light_info = {
+	.name = "button light",
+	.auto_off_time = 5,
+	.events = {
+		/*touch key*/
+		{.type = EV_KEY, .key = {KEY_ANY, -1}, .file = TOUCH_KEY_EVENT_PATH,},
+	},
+};
+#endif
 
 struct lights_fds {
     int backlight;
@@ -69,6 +106,9 @@ struct lights_fds {
 
 struct lights_ctx {
     struct lights_fds fds;
+#ifdef LIGHT_BUTTONS_AUTO_POWEROFF
+    struct light_info *button_info;
+#endif
 } *context;
 
 static int get_max_brightness()
@@ -161,8 +201,17 @@ static int set_light_buttons(struct light_device_t *dev,
     int on = __is_on(state);
     int ret;
 
+#ifdef LIGHT_BUTTONS_AUTO_POWEROFF
+    pthread_mutex_lock(&context->button_info->lock);
+    context->button_info->brightness = on ? LIGHT_LED_FULL : LIGHT_LED_OFF;
+    context->button_info->need_update = 1;
+    pthread_cond_signal(&context->button_info->cond);
+    pthread_mutex_unlock(&context->button_info->lock);
+    return 0;
+#else
     return write_brightness(context->fds.buttons,
-			on ? LIGHT_LED_DEFAULT : LIGHT_LED_OFF);
+			on ? LIGHT_LED_FULL : LIGHT_LED_OFF);
+#endif
 }
 
 static int set_light_battery(struct light_device_t *dev,
@@ -204,9 +253,134 @@ static int close_lights_dev(struct light_device_t *dev)
     return 0;
 }
 
+static void *lights_events_thread(void *arg)
+{
+	struct light_info *info = arg;
+	int i, j, tmp;
+	fd_set rfds;
+	struct input_event event;
+	int need_wake;
+	int ret;
+	int max_fd;
+
+	FD_ZERO(&rfds);
+	for (;;) {
+		need_wake = 0;
+		for (i = 0; i < WAKE_EVENT_MAX && info->events[i].file; i ++)
+			FD_SET(info->events[i].fd, &rfds);
+		max_fd = info->events[i-1].fd;
+		ret = select(max_fd + 1, &rfds, NULL, NULL, NULL);
+		if (ret < 0) {
+			if (ret == -EINTR)
+				continue;
+			LOGE("<%s>: fatal bug, select file error\n", info->name);
+			return NULL;
+		}
+		for (i = 0; i < WAKE_EVENT_MAX && info->events[i].file; i ++) {
+			if (!FD_ISSET(info->events[i].fd, &rfds))
+				continue;
+			while (read(info->events[i].fd, &event, sizeof(event)) == sizeof(event)) {
+				if (need_wake)
+					continue;
+				if(event.type == info->events[i].type) {
+					if (event.type == EV_ABS)
+						need_wake = 1;
+					else if (event.type == EV_KEY) {
+						for (j = 0; j < WAKE_KEY_MAX && info->events[i].key[j] != -1; j ++) {
+							if (info->events[i].key[j] == KEY_ANY
+									|| info->events[i].key[j] == event.code) {
+								LOGD("<%s>: EV_KEY wake up\n", info->name);
+								need_wake = 1;
+								break;
+							}
+						}
+					}
+				}
+			}
+		}
+		if (need_wake) {
+			pthread_mutex_lock(&info->lock);
+			info->need_update = 1;
+			pthread_cond_signal(&info->cond);
+			pthread_mutex_unlock(&info->lock);
+		}
+	}
+
+	return NULL;
+}
+
+static void *lights_update_thread(void *arg)
+{
+	struct light_info *info = arg;
+	int i, j, tmp;
+	struct timespec ts;
+	pthread_t tid;
+
+	/*set brightness to default*/
+	write_brightness(info->fd, info->brightness);
+	info->brightness_status = info->brightness;
+	if (info->brightness != LIGHT_LED_OFF)
+		info->need_auto_off = 1;
+	pthread_create(&tid, NULL, lights_events_thread, info);
+
+	for (;;) {
+		/* wait for update request */
+		pthread_mutex_lock(&info->lock);
+		if (info->need_update) {
+			LOGE("<%s>: update to %d\n", info->name, info->brightness);
+			info->need_update = 0;
+			if (info->brightness_status != info->brightness) {
+				info->brightness_status = info->brightness;
+				write_brightness(info->fd, info->brightness);
+			}
+		} else {
+			LOGE("<%s>: auto off\n", info->name);
+			if (info->brightness_status != LIGHT_LED_OFF) {
+				info->brightness_status = LIGHT_LED_OFF;
+				write_brightness(info->fd, LIGHT_LED_OFF);
+			}
+		}
+		if (info->brightness_status == LIGHT_LED_OFF) {
+			LOGE("<%s>: wait update\n", info->name);
+			pthread_cond_wait(&info->cond, &info->lock);
+		} else {
+			LOGE("<%s>: wait auto off\n", info->name);
+			clock_gettime(CLOCK_REALTIME, &ts);
+			ts.tv_sec += info->auto_off_time;
+			pthread_cond_timedwait(&info->cond, &info->lock, &ts);
+		}
+		pthread_mutex_unlock(&info->lock);
+	}
+
+	return NULL;
+}
+
+static void lights_init_info(struct light_info *info, int fd)
+{
+    int i;
+    pthread_t tid;
+
+    if (info == NULL)
+	    return;
+    info->fd = fd;
+    for (i = 0; i < WAKE_EVENT_MAX && info->events[i].file; i++) {
+	    info->events[i].fd = open(info->events[i].file, O_RDONLY|O_NONBLOCK);
+	    if (info->events[i].fd < 0) {
+		    LOGE("<%s>: open %s failed\n", info->name, info->events[i].file);
+	    } else {
+		    LOGD("<%s>: open %s success\n", info->name, info->events[i].file);
+	    }
+    }
+    pthread_mutex_init(&info->lock, NULL);
+    pthread_cond_init(&info->cond, NULL);
+    info->brightness = LIGHT_LED_OFF;
+    pthread_create(&tid, NULL, lights_update_thread, info);
+}
+
 static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
                             const char *id)
 {
+    struct light_info *info = NULL;
     int fd;
     int *pfd;
     char *path;
@@ -227,6 +401,9 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
         path = LIGHT_ID_BUTTONS_PATH;
         pfd = &ctx->fds.buttons;
         set_light = set_light_buttons;
+#ifdef LIGHT_BUTTONS_AUTO_POWEROFF
+	info = ctx->button_info = &button_light_info;
+#endif
     }
     else if (!strcmp(LIGHT_ID_BATTERY, id)) {
         path = LIGHT_ID_BATTERY_PATH;
@@ -256,6 +433,8 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
 
     *pfd = fd;
     dev->set_light = set_light;
+    lights_init_info(info, fd);
+
     return 0;
 }
 
