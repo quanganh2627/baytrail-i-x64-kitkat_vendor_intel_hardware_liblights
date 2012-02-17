@@ -268,7 +268,12 @@ static void *lights_events_thread(void *arg)
 		need_wake = 0;
 		for (i = 0; i < WAKE_EVENT_MAX && info->events[i].file; i ++)
 			FD_SET(info->events[i].fd, &rfds);
+
+		if (i == 0)
+			return NULL;
+
 		max_fd = info->events[i-1].fd;
+
 		ret = select(max_fd + 1, &rfds, NULL, NULL, NULL);
 		if (ret < 0) {
 			if (ret == -EINTR)
