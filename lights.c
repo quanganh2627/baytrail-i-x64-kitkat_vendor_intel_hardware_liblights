@@ -104,7 +104,7 @@ struct lights_fds {
     int attention;
 };
 
-struct lights_ctx {
+static struct lights_ctx {
     struct lights_fds fds;
 #ifdef LIGHT_BUTTONS_AUTO_POWEROFF
     struct light_info *button_info;
@@ -124,8 +124,10 @@ static int get_max_brightness()
     }
 
     ret = read(fd, &tmp_s[0], sizeof(tmp_s));
-    if (ret < 0)
-        return ret;
+    if (ret < 0) {
+	    close(fd);
+	    return ret;
+    }
 
     value = atoi(&tmp_s[0]);
 
@@ -149,7 +151,10 @@ static int write_brightness(int fd, unsigned char brightness)
 
     bright_to_intensity(max_br, brightness, intensity);
 
-    bytes = sprintf(buff, "%d\n", intensity);
+    bytes = snprintf(buff, sizeof(buff), "%d\n", intensity);
+    if (bytes < 0)
+	    return bytes;
+
     ret = write(fd, buff, bytes);
     if (ret < 0) {
         LOGE("faild to write %d (fd = %d, errno = %d)\n",
@@ -180,7 +185,6 @@ set_light_backlight(struct light_device_t *dev,
                     const struct light_state_t *state)
 {
     int brightness = __rgb_to_brightness(state);
-    int ret;
 
     return write_brightness(context->fds.backlight, brightness);
 }
@@ -189,7 +193,6 @@ static int set_light_keyboard(struct light_device_t *dev,
                               const struct light_state_t *state)
 {
     int on = __is_on(state);
-    int ret;
 
     return write_brightness(context->fds.keyboard,
                             on ? LIGHT_LED_FULL : LIGHT_LED_OFF);
@@ -199,14 +202,22 @@ static int set_light_buttons(struct light_device_t *dev,
                              const struct light_state_t *state)
 {
     int on = __is_on(state);
-    int ret;
 
 #ifdef LIGHT_BUTTONS_AUTO_POWEROFF
-    pthread_mutex_lock(&context->button_info->lock);
-    context->button_info->brightness = on ? LIGHT_LED_FULL : LIGHT_LED_OFF;
-    context->button_info->need_update = 1;
-    pthread_cond_signal(&context->button_info->cond);
-    pthread_mutex_unlock(&context->button_info->lock);
+    if (!pthread_mutex_lock(&context->button_info->lock)) {
+	    context->button_info->brightness = on ? LIGHT_LED_FULL : LIGHT_LED_OFF;
+	    context->button_info->need_update = 1;
+	    if (pthread_cond_signal(&context->button_info->cond))
+		    LOGE("Error: <%s>: pthread_cond_signal\n", __func__);
+	    if (pthread_mutex_unlock(&context->button_info->lock)) {
+		    LOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
+		    return -1;
+	    }
+    } else {
+	    LOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
+	    return -1;
+    }
+
     return 0;
 #else
     return write_brightness(context->fds.buttons,
@@ -218,7 +229,6 @@ static int set_light_battery(struct light_device_t *dev,
                              const struct light_state_t *state)
 {
     int on = __is_on(state);
-    int ret;
 
     return write_brightness(context->fds.battery,
                             on ? LIGHT_LED_FULL : LIGHT_LED_OFF);
@@ -228,7 +238,6 @@ static int set_light_notifications(struct light_device_t *dev,
                                    const struct light_state_t *state)
 {
     int on = __is_on(state);
-    int ret;
 
     return write_brightness(context->fds.notifications,
                             on ? LIGHT_LED_FULL : LIGHT_LED_OFF);
@@ -238,7 +247,6 @@ static int set_light_attention(struct light_device_t *dev,
                                const struct light_state_t *state)
 {
     int on = __is_on(state);
-    int ret;
 
     return write_brightness(context->fds.attention,
                             on ? LIGHT_LED_FULL : LIGHT_LED_OFF);
@@ -256,7 +264,7 @@ static int close_lights_dev(struct light_device_t *dev)
 static void *lights_events_thread(void *arg)
 {
 	struct light_info *info = arg;
-	int i, j, tmp;
+	int i, j;
 	fd_set rfds;
 	struct input_event event;
 	int need_wake;
@@ -304,10 +312,18 @@ static void *lights_events_thread(void *arg)
 			}
 		}
 		if (need_wake) {
-			pthread_mutex_lock(&info->lock);
-			info->need_update = 1;
-			pthread_cond_signal(&info->cond);
-			pthread_mutex_unlock(&info->lock);
+			if (!pthread_mutex_lock(&info->lock)) {
+				info->need_update = 1;
+				if (pthread_cond_signal(&info->cond))
+					LOGE("Error: <%s>: pthread_cond_signal\n", __func__);
+				if (pthread_mutex_unlock(&info->lock)) {
+					LOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
+					return NULL;
+				}
+			} else {
+				LOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
+				return NULL;
+			}
 		}
 	}
 
@@ -317,7 +333,6 @@ static void *lights_events_thread(void *arg)
 static void *lights_update_thread(void *arg)
 {
 	struct light_info *info = arg;
-	int i, j, tmp;
 	struct timespec ts;
 	pthread_t tid;
 
@@ -330,31 +345,40 @@ static void *lights_update_thread(void *arg)
 
 	for (;;) {
 		/* wait for update request */
-		pthread_mutex_lock(&info->lock);
-		if (info->need_update) {
-			LOGE("<%s>: update to %d\n", info->name, info->brightness);
-			info->need_update = 0;
-			if (info->brightness_status != info->brightness) {
-				info->brightness_status = info->brightness;
-				write_brightness(info->fd, info->brightness);
+		if (!pthread_mutex_lock(&info->lock)) {
+			if (info->need_update) {
+				LOGE("<%s>: update to %d\n", info->name, info->brightness);
+				info->need_update = 0;
+				if (info->brightness_status != info->brightness) {
+					info->brightness_status = info->brightness;
+					write_brightness(info->fd, info->brightness);
+				}
+			} else {
+				LOGE("<%s>: auto off\n", info->name);
+				if (info->brightness_status != LIGHT_LED_OFF) {
+					info->brightness_status = LIGHT_LED_OFF;
+					write_brightness(info->fd, LIGHT_LED_OFF);
+				}
+			}
+			if (info->brightness_status == LIGHT_LED_OFF) {
+				LOGE("<%s>: wait update\n", info->name);
+				if (pthread_cond_wait(&info->cond, &info->lock))
+					LOGE("Error: <%s>: pthread_cond_wait\n", __func__);
+			} else {
+				LOGE("<%s>: wait auto off\n", info->name);
+				clock_gettime(CLOCK_REALTIME, &ts);
+				ts.tv_sec += info->auto_off_time;
+				if (pthread_cond_timedwait(&info->cond, &info->lock, &ts))
+					LOGE("Error: <%s>: pthread_cond_timedwait\n", __func__);
+			}
+			if (pthread_mutex_unlock(&info->lock)) {
+				LOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
+				return NULL;
 			}
 		} else {
-			LOGE("<%s>: auto off\n", info->name);
-			if (info->brightness_status != LIGHT_LED_OFF) {
-				info->brightness_status = LIGHT_LED_OFF;
-				write_brightness(info->fd, LIGHT_LED_OFF);
-			}
+			LOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
+			return NULL;
 		}
-		if (info->brightness_status == LIGHT_LED_OFF) {
-			LOGE("<%s>: wait update\n", info->name);
-			pthread_cond_wait(&info->cond, &info->lock);
-		} else {
-			LOGE("<%s>: wait auto off\n", info->name);
-			clock_gettime(CLOCK_REALTIME, &ts);
-			ts.tv_sec += info->auto_off_time;
-			pthread_cond_timedwait(&info->cond, &info->lock, &ts);
-		}
-		pthread_mutex_unlock(&info->lock);
 	}
 
 	return NULL;
@@ -365,7 +389,7 @@ static void lights_init_info(struct light_info *info, int fd)
     int i;
     pthread_t tid;
 
-    if (info == NULL)
+    if ((info == NULL) || (fd < 0))
 	    return;
     info->fd = fd;
     for (i = 0; i < WAKE_EVENT_MAX && info->events[i].file; i++) {
@@ -376,8 +400,10 @@ static void lights_init_info(struct light_info *info, int fd)
 		    LOGD("<%s>: open %s success\n", info->name, info->events[i].file);
 	    }
     }
-    pthread_mutex_init(&info->lock, NULL);
-    pthread_cond_init(&info->cond, NULL);
+    if (pthread_mutex_init(&info->lock, NULL))
+	    return;
+    if (pthread_cond_init(&info->cond, NULL))
+	    return;
     info->brightness = LIGHT_LED_OFF;
     pthread_create(&tid, NULL, lights_update_thread, info);
 }
@@ -386,7 +412,6 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
                             const char *id)
 {
     struct light_info *info = NULL;
-    int fd;
     int *pfd;
     char *path;
     int (*set_light)(struct light_device_t* dev,
@@ -428,17 +453,16 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
     else
         return -EINVAL;
 
-    fd = open(path, O_RDWR);
-    if (fd < 0) {
+    *pfd = open(path, O_RDWR);
+    if (*pfd < 0) {
         LOGE("faild to open %s, ret = %d\n", path, errno);
         return -errno;
     }
 
-    LOGD("opened %s, fd = %d\n", path, fd);
+    LOGD("opened %s, fd = %d\n", path, *pfd);
 
-    *pfd = fd;
     dev->set_light = set_light;
-    lights_init_info(info, fd);
+    lights_init_info(info, *pfd);
 
     return 0;
 }
@@ -448,6 +472,9 @@ static struct lights_ctx *lights_init_context(void)
     struct lights_ctx *ctx;
 
     ctx = malloc(sizeof(struct lights_ctx));
+    if (!ctx)
+	    return NULL;
+
     memset(ctx, 0, sizeof(*ctx));
 
     ctx->fds.backlight = -1;
@@ -477,10 +504,16 @@ static int open_lights(const struct hw_module_t *module, const char *id,
     int ret;
 
     dev = malloc(sizeof(struct light_device_t));
+    if (!dev)
+	    return -ENOMEM;
+
     memset(dev, 0, sizeof(*dev));
 
-    if (!context)
+    if (!context) {
         context = lights_init_context();
+	if (!context)
+		return -ENOMEM;
+    }
 
     ret = lights_open_node(context, dev, id);
     if (ret < 0) {
