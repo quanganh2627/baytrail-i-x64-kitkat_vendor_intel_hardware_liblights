@@ -511,8 +511,10 @@ static int open_lights(const struct hw_module_t *module, const char *id,
 
     if (!context) {
         context = lights_init_context();
-	if (!context)
+	if (!context) {
+		free(dev);
 		return -ENOMEM;
+	}
     }
 
     ret = lights_open_node(context, dev, id);
