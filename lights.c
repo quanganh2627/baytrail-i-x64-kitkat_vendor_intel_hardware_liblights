@@ -17,6 +17,7 @@
 #define LOG_TAG "lights"
 
 #include <cutils/log.h>
+#include <stdlib.h>
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -24,27 +25,62 @@
 
 /******************************************************************************/
 
-char const* const BACKLIGHT_FILE = "/sys/class/backlight/intel_backlight/brightness";
-char const* const BACKLIGHT_MAX_FILE= "/sys/class/backlight/intel_backlight/max_brightness";
 const int BRIGHTNESS_MASK = 0xFFFF;
-const int BRIGHTNESS_DEFAULT_MAX = 4648;
 
-/* minimum backlight for visibility, try to set it to:
- * not less than 0
- * not greater than BRIGHTNESS_DEFAULT_MAX
- * not annoying in a pretty darker env.
- * still possibly keep visibility in a harsh bright env.
- */
-const int BRIGHTNESS_MIN_VISIBLE = 20;
+struct backlight_device_t {
+    char* name;
+    char* backlight_file;
+    char* backlight_max_file;
+    int   brightness_default_max;
+    int   brightness_min_visible;
+};
+
+enum {
+    INTEL_VIDEO_BL_CTRL,
+    ACPI_VIDEO_BL_CTRL,
+
+    MAX_BL_CTRL_DEVICES
+};
+
+static struct backlight_device_t backlight_devices[] = {
+    {
+        .name = "Intel video backlight control",
+        .backlight_file =
+            "/sys/class/backlight/intel_backlight/brightness",
+        .backlight_max_file =
+            "/sys/class/backlight/intel_backlight/max_brightness",
+        .brightness_default_max = 4648,
+        .brightness_min_visible = 20
+    },
+    {
+        .name = "ACPI video backlight control",
+        .backlight_file =
+            "/sys/class/backlight/acpi_video0/brightness",
+        .backlight_max_file =
+            "/sys/class/backlight/acpi_video0/max_brightness",
+        .brightness_default_max = 15,
+        .brightness_min_visible = 1
+    },
+};
+
+static struct backlight_device_t* cur_backlight_dev = NULL;
 
 static int get_max_brightness()
 {
     char tmp_s[8];
-    int fd, ret;
-    int value = BRIGHTNESS_DEFAULT_MAX;
-    fd = open( BACKLIGHT_MAX_FILE, O_RDONLY);
+    int fd = -1;
+    int ret;
+    int value = 0;
+
+    if (!cur_backlight_dev) {
+        goto fail;
+    }
+
+    value = cur_backlight_dev->brightness_default_max;
+    fd = open(cur_backlight_dev->backlight_max_file, O_RDONLY);
     if (fd < 0) {
-            ALOGE("faild to open %s, errno = %d\n", BACKLIGHT_MAX_FILE, errno);
+            ALOGE("faild to open %s, errno = %d\n",
+                  cur_backlight_dev->backlight_max_file, errno);
             return value;
     }
 
@@ -70,9 +106,13 @@ static int set_light_backlight(struct light_device_t* dev,
     int brightness = (state->color & BRIGHTNESS_MASK);
     int max_brightness = get_max_brightness();
 
-    if (max_brightness <= BRIGHTNESS_MIN_VISIBLE) {
+    if (!cur_backlight_dev) {
+        return -ENXIO;
+    }
+
+    if (max_brightness <= cur_backlight_dev->brightness_min_visible) {
       ALOGE("Invalid maximum backlight output %d <= min visible %d\n",
-	   max_brightness, BRIGHTNESS_MIN_VISIBLE);
+	   max_brightness, cur_backlight_dev->brightness_min_visible);
       return -EINVAL;
     }
 
@@ -84,13 +124,16 @@ static int set_light_backlight(struct light_device_t* dev,
      */
 
     if (brightness) {
-      brightness *= (max_brightness - BRIGHTNESS_MIN_VISIBLE);
-      brightness = brightness / BRIGHTNESS_MASK + BRIGHTNESS_MIN_VISIBLE;
+      brightness *= (max_brightness -
+                         cur_backlight_dev->brightness_min_visible);
+      brightness = brightness / BRIGHTNESS_MASK +
+                       cur_backlight_dev->brightness_min_visible;
     }
 
-    fd = open(BACKLIGHT_FILE, O_RDWR);
+    fd = open(cur_backlight_dev->backlight_file, O_RDWR);
     if (fd < 0) {
-        ALOGE("unable to open %s: %s\n", BACKLIGHT_FILE, strerror(errno));
+        ALOGE("unable to open %s: %s\n",
+                  cur_backlight_dev->backlight_file, strerror(errno));
         return -errno;
     }
     to_write = sprintf(buf, "%d\n", brightness);
@@ -109,6 +152,30 @@ static int close_lights(struct light_device_t *dev)
     return 0;
 }
 
+static void determine_backlight_device()
+{
+    int i;
+
+    for (i = 0; i < MAX_BL_CTRL_DEVICES; i++) {
+        /* see if brightness can be written */
+        if (access(backlight_devices[i].backlight_file, W_OK)) {
+            continue;
+        }
+
+        /* see if max_brightness can be read */
+        if (access(backlight_devices[i].backlight_max_file, R_OK)) {
+            continue;
+        }
+
+        /* both files are fine, so we use this backlight control */
+        cur_backlight_dev = &backlight_devices[i];
+        ALOGI("Selected %s\n", cur_backlight_dev->name);
+        return;
+    }
+
+    cur_backlight_dev = NULL;
+    ALOGE("Cannot find supported backlight controls\n");
+}
 
 /******************************************************************************/
 
@@ -124,6 +191,8 @@ static int open_lights(const struct hw_module_t* module, char const* name,
 
     if (strcmp(LIGHT_ID_BACKLIGHT, name))
         return -EINVAL;
+
+    determine_backlight_device();
 
     dev = malloc(sizeof(struct light_device_t));
     memset(dev, 0, sizeof(*dev));
