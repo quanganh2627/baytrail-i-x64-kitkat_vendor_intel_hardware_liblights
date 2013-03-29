@@ -36,10 +36,18 @@
 #define LIGHT_LED_FULL  255
 
 #define LIGHT_PATH_BASE "/sys/class"
+
+#ifdef GRAPHIC_IS_GEN
+#define LIGHT_ID_BACKLIGHT_PATH                         \
+    LIGHT_PATH_BASE"/backlight/intel_backlight/brightness"
+#define LIGHT_ID_MAX_BACKLIGHT_PATH                     \
+    LIGHT_PATH_BASE"/backlight/intel_backlight/max_brightness"
+#else
 #define LIGHT_ID_BACKLIGHT_PATH                         \
     LIGHT_PATH_BASE"/backlight/psb-bl/brightness"
 #define LIGHT_ID_MAX_BACKLIGHT_PATH                     \
     LIGHT_PATH_BASE"/backlight/psb-bl/max_brightness"
+#endif /* CONFIG_INTEL_GEN_GRAPHICS */
 
 /* if cdk board have leds, new sys path related to leds should be defined. */
 #define LIGHT_ID_KEYBOARD_PATH                          \
