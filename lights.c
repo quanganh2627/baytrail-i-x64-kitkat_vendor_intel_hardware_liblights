@@ -152,7 +152,8 @@ static int set_light_backlight(struct light_device_t* dev,
     }
     ALOGI("Setting brightess to %d", brightness);
     to_write = sprintf(buf, "%d\n", brightness);
-    written = write(fd, buf, to_write);
+    if (to_write > 0)
+        written = write(fd, buf, to_write);
     close(fd);
 
     return written < 0 ? -errno : 0;
@@ -210,6 +211,10 @@ static int open_lights(const struct hw_module_t* module, char const* name,
     determine_backlight_device();
 
     dev = malloc(sizeof(struct light_device_t));
+    if (!dev) {
+        ALOGE("Could not allocate memory for lights_device_t!");
+        return -ENOMEM;
+    }
     memset(dev, 0, sizeof(*dev));
 
     dev->common.tag     = HARDWARE_DEVICE_TAG;
