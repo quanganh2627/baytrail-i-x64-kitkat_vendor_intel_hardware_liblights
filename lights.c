@@ -17,6 +17,7 @@
 #define LOG_TAG "lights"
 
 #include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 #include <errno.h>
@@ -36,18 +37,6 @@
 #define LIGHT_LED_FULL  255
 
 #define LIGHT_PATH_BASE "/sys/class"
-
-#ifdef GRAPHIC_IS_GEN
-#define LIGHT_ID_BACKLIGHT_PATH                         \
-    LIGHT_PATH_BASE"/backlight/intel_backlight/brightness"
-#define LIGHT_ID_MAX_BACKLIGHT_PATH                     \
-    LIGHT_PATH_BASE"/backlight/intel_backlight/max_brightness"
-#else
-#define LIGHT_ID_BACKLIGHT_PATH                         \
-    LIGHT_PATH_BASE"/backlight/psb-bl/brightness"
-#define LIGHT_ID_MAX_BACKLIGHT_PATH                     \
-    LIGHT_PATH_BASE"/backlight/psb-bl/max_brightness"
-#endif /* CONFIG_INTEL_GEN_GRAPHICS */
 
 /* if cdk board have leds, new sys path related to leds should be defined. */
 #define LIGHT_ID_KEYBOARD_PATH                          \
@@ -71,6 +60,46 @@
 #define WAKE_EVENT_MAX		8
 #define WAKE_KEY_MAX		32
 #define KEY_ANY			(KEY_MAX+0x1)
+
+struct backlight_device_t {
+    char* name;
+    char* backlight_file;
+    char* backlight_max_file;
+};
+
+enum {
+    INTEL_VIDEO_BL_CTRL,
+    ACPI_VIDEO_BL_CTRL,
+    PSB_BL_VIDEO_BL_CTRL,
+
+    MAX_BL_CTRL_DEVICES
+};
+
+static struct backlight_device_t backlight_devices[] = {
+    {
+        .name = "Intel video backlight control",
+        .backlight_file =
+            "/sys/class/backlight/intel_backlight/brightness",
+        .backlight_max_file =
+            "/sys/class/backlight/intel_backlight/max_brightness",
+    },
+    {
+        .name = "ACPI video backlight control",
+        .backlight_file =
+            "/sys/class/backlight/acpi_video0/brightness",
+        .backlight_max_file =
+            "/sys/class/backlight/acpi_video0/max_brightness",
+    },
+    {
+        .name = "PSB-BL backlight control",
+        .backlight_file =
+            "/sys/class/backlight/psb-bl/brightness",
+        .backlight_max_file =
+            "/sys/class/backlight/psb-bl/max_brightness",
+    },
+};
+
+static struct backlight_device_t* cur_backlight_dev = NULL;
 
 struct light_wake_event {
 	char	*file;
@@ -119,15 +148,43 @@ static struct lights_ctx {
 #endif
 } *context;
 
+static void determine_backlight_device()
+{
+    int i;
+
+    for (i = 0; i < MAX_BL_CTRL_DEVICES; i++) {
+        /* see if brightness can be written */
+        if (access(backlight_devices[i].backlight_file, W_OK)) {
+            continue;
+        }
+
+        /* see if max_brightness can be read */
+        if (access(backlight_devices[i].backlight_max_file, R_OK)) {
+            continue;
+        }
+
+        /* both files are fine, so we use this backlight control */
+        cur_backlight_dev = &backlight_devices[i];
+        ALOGI("Selected %s\n", cur_backlight_dev->name);
+        return;
+    }
+
+    cur_backlight_dev = NULL;
+    ALOGE("Cannot find supported backlight controls\n");
+}
+
 static int get_max_brightness()
 {
     char tmp_s[8];
     int fd, value, ret;
-    char *path = LIGHT_ID_MAX_BACKLIGHT_PATH;
 
-    fd = open(path, O_RDONLY);
+    if (cur_backlight_dev == NULL) {
+        determine_backlight_device();
+    }
+
+    fd = open(cur_backlight_dev->backlight_max_file, O_RDONLY);
     if (fd < 0) {
-            LOGE("faild to open %s, ret = %d\n", path, errno);
+            LOGE("failed to open %s, ret = %d\n", cur_backlight_dev->backlight_max_file, errno);
             return -errno;
     }
 
@@ -165,7 +222,7 @@ static int write_brightness(int fd, unsigned char brightness)
 
     ret = write(fd, buff, bytes);
     if (ret < 0) {
-        LOGE("faild to write %d (fd = %d, errno = %d)\n",
+        LOGE("failed to write %d (fd = %d, errno = %d)\n",
              intensity, fd, errno);
         return -errno;
     }
@@ -426,7 +483,8 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
                      struct light_state_t const* state);
 
     if (!strcmp(LIGHT_ID_BACKLIGHT, id)) {
-        path = LIGHT_ID_BACKLIGHT_PATH;
+        determine_backlight_device();
+        path = cur_backlight_dev->backlight_file;
         pfd = &ctx->fds.backlight;
         set_light = set_light_backlight;
     }
@@ -463,7 +521,7 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
 
     *pfd = open(path, O_RDWR);
     if (*pfd < 0) {
-        LOGE("faild to open %s, ret = %d\n", path, errno);
+        LOGE("failed to open %s, ret = %d\n", path, errno);
         return -errno;
     }
 
