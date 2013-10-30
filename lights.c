@@ -28,6 +28,7 @@
 #include <sys/types.h>
 
 #include <cutils/log.h>
+#include <cutils/properties.h>
 #include <hardware/lights.h>
 #include <linux/input.h>
 
@@ -65,6 +66,7 @@ struct backlight_device_t {
     char* name;
     char* backlight_file;
     char* backlight_max_file;
+    int max_brightness;
 };
 
 enum {
@@ -100,6 +102,10 @@ static struct backlight_device_t backlight_devices[] = {
 };
 
 static struct backlight_device_t* cur_backlight_dev = NULL;
+
+#ifdef ALLOW_PERSIST_BRIGHTNESS_OVERRIDE
+static int override_brightness_value;
+#endif
 
 struct light_wake_event {
 	char	*file;
@@ -148,6 +154,31 @@ static struct lights_ctx {
 #endif
 } *context;
 
+static int get_max_brightness(void);
+
+#ifdef ALLOW_PERSIST_BRIGHTNESS_OVERRIDE
+static void check_override_brightness(void)
+{
+    /* if a persist property is defined, use that brightness
+     * value instead of the one coming from userspace.
+     * This is mainly used for power measurement.
+     */
+    char *prop_key = "persist.sys.backlight.override";
+    char prop_value[PROPERTY_VALUE_MAX];
+
+    override_brightness_value = -1;
+    if (property_get(prop_key, prop_value, "-1")) {
+        prop_value[PROPERTY_VALUE_MAX - 1] = '\0';
+        override_brightness_value = atoi(prop_value);
+
+        if (override_brightness_value > 0) {
+            ALOGI("Overriding backlight brightess values to: %d",
+                override_brightness_value);
+        }
+    }
+}
+#endif
+
 static void determine_backlight_device()
 {
     int i;
@@ -165,6 +196,7 @@ static void determine_backlight_device()
 
         /* both files are fine, so we use this backlight control */
         cur_backlight_dev = &backlight_devices[i];
+        cur_backlight_dev->max_brightness = get_max_brightness();
         ALOGI("Selected %s\n", cur_backlight_dev->name);
         return;
     }
@@ -207,7 +239,7 @@ static int write_brightness(int fd, unsigned char brightness)
     int intensity;
     int bytes, ret, max_br;
 
-    max_br = get_max_brightness(); 
+    max_br = cur_backlight_dev->max_brightness;
 
     if(max_br < 0){
         LOGE("fail to read max brightness\n");
@@ -249,7 +281,18 @@ static int
 set_light_backlight(struct light_device_t *dev,
                     const struct light_state_t *state)
 {
-    int brightness = __rgb_to_brightness(state);
+    int brightness = state->color;
+#ifdef ALLOW_PERSIST_BRIGHTNESS_OVERRIDE
+    check_override_brightness();
+    /** we still want to blank the screen if needed */
+    if (override_brightness_value > 0) {
+        brightness = (brightness == 0) ? 0 : override_brightness_value;
+        if (brightness > cur_backlight_dev->max_brightness) {
+            brightness = cur_backlight_dev->max_brightness;
+        }
+    } else
+#endif
+    brightness = __rgb_to_brightness(state);
 
     return write_brightness(context->fds.backlight, brightness);
 }
