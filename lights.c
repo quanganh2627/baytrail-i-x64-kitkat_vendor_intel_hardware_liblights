@@ -179,9 +179,10 @@ static void check_override_brightness(void)
 }
 #endif
 
-static void determine_backlight_device()
+static struct backlight_device_t* determine_backlight_device()
 {
     int i;
+    cur_backlight_dev = NULL;
 
     for (i = 0; i < MAX_BL_CTRL_DEVICES; i++) {
         /* see if brightness can be written */
@@ -198,11 +199,12 @@ static void determine_backlight_device()
         cur_backlight_dev = &backlight_devices[i];
         cur_backlight_dev->max_brightness = get_max_brightness();
         ALOGI("Selected %s\n", cur_backlight_dev->name);
-        return;
     }
 
-    cur_backlight_dev = NULL;
-    ALOGE("Cannot find supported backlight controls\n");
+    if (cur_backlight_dev == NULL)
+        ALOGE("Cannot find supported backlight controls\n");
+
+    return cur_backlight_dev;
 }
 
 static int get_max_brightness()
@@ -211,7 +213,8 @@ static int get_max_brightness()
     int fd, value, ret;
 
     if (cur_backlight_dev == NULL) {
-        determine_backlight_device();
+        if (determine_backlight_device() == NULL)
+            return -ENODEV;
     }
 
     fd = open(cur_backlight_dev->backlight_max_file, O_RDONLY);
@@ -526,7 +529,8 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
                      struct light_state_t const* state);
 
     if (!strcmp(LIGHT_ID_BACKLIGHT, id)) {
-        determine_backlight_device();
+        if (determine_backlight_device() == NULL)
+            return -ENODEV;
         path = cur_backlight_dev->backlight_file;
         pfd = &ctx->fds.backlight;
         set_light = set_light_backlight;
