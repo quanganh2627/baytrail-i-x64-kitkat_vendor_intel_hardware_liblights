@@ -127,7 +127,7 @@ static int get_max_brightness()
 
     fd = open(path, O_RDONLY);
     if (fd < 0) {
-            LOGE("faild to open %s, ret = %d\n", path, errno);
+            ALOGE("faild to open %s, ret = %d\n", path, errno);
             return -errno;
     }
 
@@ -153,7 +153,7 @@ static int write_brightness(int fd, unsigned char brightness)
     max_br = get_max_brightness(); 
 
     if(max_br < 0){
-        LOGE("fail to read max brightness\n");
+        ALOGE("fail to read max brightness\n");
         return -1;
     }
 
@@ -165,7 +165,7 @@ static int write_brightness(int fd, unsigned char brightness)
 
     ret = write(fd, buff, bytes);
     if (ret < 0) {
-        LOGE("faild to write %d (fd = %d, errno = %d)\n",
+        ALOGE("faild to write %d (fd = %d, errno = %d)\n",
              intensity, fd, errno);
         return -errno;
     }
@@ -216,13 +216,13 @@ static int set_light_buttons(struct light_device_t *dev,
 	    context->button_info->brightness = on ? LIGHT_LED_FULL : LIGHT_LED_OFF;
 	    context->button_info->need_update = 1;
 	    if (pthread_cond_signal(&context->button_info->cond))
-		    LOGE("Error: <%s>: pthread_cond_signal\n", __func__);
+		    ALOGE("Error: <%s>: pthread_cond_signal\n", __func__);
 	    if (pthread_mutex_unlock(&context->button_info->lock)) {
-		    LOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
+		    ALOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
 		    return -1;
 	    }
     } else {
-	    LOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
+	    ALOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
 	    return -1;
     }
 
@@ -294,7 +294,7 @@ static void *lights_events_thread(void *arg)
 		if (ret < 0) {
 			if (ret == -EINTR)
 				continue;
-			LOGE("<%s>: fatal bug, select file error\n", info->name);
+			ALOGE("<%s>: fatal bug, select file error\n", info->name);
 			return NULL;
 		}
 		for (i = 0; i < WAKE_EVENT_MAX && info->events[i].file; i ++) {
@@ -310,7 +310,7 @@ static void *lights_events_thread(void *arg)
 						for (j = 0; j < WAKE_KEY_MAX && info->events[i].key[j] != -1; j ++) {
 							if (info->events[i].key[j] == KEY_ANY
 									|| info->events[i].key[j] == event.code) {
-								LOGD("<%s>: EV_KEY wake up\n", info->name);
+								ALOGD("<%s>: EV_KEY wake up\n", info->name);
 								need_wake = 1;
 								break;
 							}
@@ -323,13 +323,13 @@ static void *lights_events_thread(void *arg)
 			if (!pthread_mutex_lock(&info->lock)) {
 				info->need_update = 1;
 				if (pthread_cond_signal(&info->cond))
-					LOGE("Error: <%s>: pthread_cond_signal\n", __func__);
+					ALOGE("Error: <%s>: pthread_cond_signal\n", __func__);
 				if (pthread_mutex_unlock(&info->lock)) {
-					LOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
+					ALOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
 					return NULL;
 				}
 			} else {
-				LOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
+				ALOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
 				return NULL;
 			}
 		}
@@ -355,36 +355,36 @@ static void *lights_update_thread(void *arg)
 		/* wait for update request */
 		if (!pthread_mutex_lock(&info->lock)) {
 			if (info->need_update) {
-				LOGE("<%s>: update to %d\n", info->name, info->brightness);
+				ALOGE("<%s>: update to %d\n", info->name, info->brightness);
 				info->need_update = 0;
 				if (info->brightness_status != info->brightness) {
 					info->brightness_status = info->brightness;
 					write_brightness(info->fd, info->brightness);
 				}
 			} else {
-				LOGE("<%s>: auto off\n", info->name);
+				ALOGE("<%s>: auto off\n", info->name);
 				if (info->brightness_status != LIGHT_LED_OFF) {
 					info->brightness_status = LIGHT_LED_OFF;
 					write_brightness(info->fd, LIGHT_LED_OFF);
 				}
 			}
 			if (info->brightness_status == LIGHT_LED_OFF) {
-				LOGE("<%s>: wait update\n", info->name);
+				ALOGE("<%s>: wait update\n", info->name);
 				if (pthread_cond_wait(&info->cond, &info->lock))
-					LOGE("Error: <%s>: pthread_cond_wait\n", __func__);
+					ALOGE("Error: <%s>: pthread_cond_wait\n", __func__);
 			} else {
-				LOGE("<%s>: wait auto off\n", info->name);
+				ALOGE("<%s>: wait auto off\n", info->name);
 				clock_gettime(CLOCK_REALTIME, &ts);
 				ts.tv_sec += info->auto_off_time;
 				if (pthread_cond_timedwait(&info->cond, &info->lock, &ts))
-					LOGE("Error: <%s>: pthread_cond_timedwait\n", __func__);
+					ALOGE("Error: <%s>: pthread_cond_timedwait\n", __func__);
 			}
 			if (pthread_mutex_unlock(&info->lock)) {
-				LOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
+				ALOGE("Error: <%s>: pthread_mutex_unlock\n", __func__);
 				return NULL;
 			}
 		} else {
-			LOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
+			ALOGE("Error: <%s>: pthread_mutex_lock\n", __func__);
 			return NULL;
 		}
 	}
@@ -403,9 +403,9 @@ static void lights_init_info(struct light_info *info, int fd)
     for (i = 0; i < WAKE_EVENT_MAX && info->events[i].file; i++) {
 	    info->events[i].fd = open(info->events[i].file, O_RDONLY|O_NONBLOCK);
 	    if (info->events[i].fd < 0) {
-		    LOGE("<%s>: open %s failed\n", info->name, info->events[i].file);
+		    ALOGE("<%s>: open %s failed\n", info->name, info->events[i].file);
 	    } else {
-		    LOGD("<%s>: open %s success\n", info->name, info->events[i].file);
+		    ALOGD("<%s>: open %s success\n", info->name, info->events[i].file);
 	    }
     }
     if (pthread_mutex_init(&info->lock, NULL))
@@ -463,11 +463,11 @@ static int lights_open_node(struct lights_ctx *ctx, struct light_device_t *dev,
 
     *pfd = open(path, O_RDWR);
     if (*pfd < 0) {
-        LOGE("faild to open %s, ret = %d\n", path, errno);
+        ALOGE("faild to open %s, ret = %d\n", path, errno);
         return -errno;
     }
 
-    LOGD("opened %s, fd = %d\n", path, *pfd);
+    ALOGD("opened %s, fd = %d\n", path, *pfd);
 
     dev->set_light = set_light;
     lights_init_info(info, *pfd);
