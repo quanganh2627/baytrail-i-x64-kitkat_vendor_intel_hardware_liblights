@@ -107,7 +107,7 @@ static int set_light_backlight(struct light_device_t* dev,
 {
     int fd;
     char buf[20];
-    int written, to_write;
+    int written = -1, to_write;
     int brightness = (state->color & BRIGHTNESS_MASK);
     int max_brightness = get_max_brightness();
 
