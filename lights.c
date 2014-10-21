@@ -26,7 +26,7 @@
 
 /******************************************************************************/
 
-const int BRIGHTNESS_MASK = 0xFFFF;
+const int MAX_BRIGHTNESS_INPUT = 255;
 
 struct backlight_device_t {
     char* name;
@@ -101,6 +101,13 @@ fail:
     return value;
 }
 
+static unsigned char color_to_brightness(unsigned int color)
+{
+	/* this conversion is based on google's recommendation in lights.h */
+	return ((77*((color>>16)&0x00ff))
+		+ (150*((color>>8)&0x00ff)) + (29*(color&0x00ff))) >> 8;
+}
+
 /* this changes the backlight brightness */
 static int set_light_backlight(struct light_device_t* dev,
                             struct light_state_t const* state)
@@ -108,7 +115,7 @@ static int set_light_backlight(struct light_device_t* dev,
     int fd;
     char buf[20];
     int written = -1, to_write;
-    int brightness = (state->color & BRIGHTNESS_MASK);
+    int brightness = color_to_brightness(state->color);
     int max_brightness = get_max_brightness();
 
     if (!cur_backlight_dev) {
@@ -140,7 +147,7 @@ static int set_light_backlight(struct light_device_t* dev,
     if (brightness) {
       brightness *= (max_brightness -
                          cur_backlight_dev->brightness_min_visible);
-      brightness = brightness / BRIGHTNESS_MASK +
+      brightness = brightness / MAX_BRIGHTNESS_INPUT +
                        cur_backlight_dev->brightness_min_visible;
     }
 
