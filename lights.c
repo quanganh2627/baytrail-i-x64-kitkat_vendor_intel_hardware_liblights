@@ -17,7 +17,6 @@
 #define LOG_TAG "lights"
 
 #include <cutils/log.h>
-#include <cutils/properties.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
@@ -42,10 +41,6 @@ enum {
 
     MAX_BL_CTRL_DEVICES
 };
-
-#ifdef ALLOW_PERSIST_BRIGHTNESS_OVERRIDE
-static int override_brightness_value;
-#endif
 
 static struct backlight_device_t backlight_devices[] = {
     {
@@ -135,15 +130,6 @@ static int set_light_backlight(struct light_device_t* dev,
      * The change should be linear in the whole acceptable range.
      */
 
-#ifdef ALLOW_PERSIST_BRIGHTNESS_OVERRIDE
-    /** we still want to blank the screen if needed */
-    if (override_brightness_value > 0) {
-      brightness = (brightness == 0) ? 0 : override_brightness_value;
-      if (brightness > max_brightness) {
-        brightness = max_brightness;
-      }
-    } else
-#endif
     if (brightness) {
       brightness *= (max_brightness -
                          cur_backlight_dev->brightness_min_visible);
@@ -157,7 +143,6 @@ static int set_light_backlight(struct light_device_t* dev,
                   cur_backlight_dev->backlight_file, strerror(errno));
         return -errno;
     }
-    ALOGI("Setting brightess to %d", brightness);
     to_write = sprintf(buf, "%d\n", brightness);
     if (to_write > 0)
         written = write(fd, buf, to_write);
@@ -231,27 +216,6 @@ static int open_lights(const struct hw_module_t* module, char const* name,
     dev->set_light      = set_light_backlight;
 
     *device = (struct hw_device_t*) dev;
-
-#ifdef ALLOW_PERSIST_BRIGHTNESS_OVERRIDE
-    /* if a persist property is defined, use that brightness
-     * value instead of the one coming from userspace.
-     * This is mainly used for power measurement.
-     */
-    char *prop_key = "persist.sys.backlight.override";
-    char prop_value[PROPERTY_VALUE_MAX];
-
-    override_brightness_value = -1;
-    if (property_get(prop_key, prop_value, "-1")) {
-      prop_value[PROPERTY_VALUE_MAX - 1] = '\0';
-      override_brightness_value = atoi(prop_value);
-
-      if (override_brightness_value > 0) {
-        ALOGI("Overriding backlight brightess values to: %d",
-             override_brightness_value);
-      }
-    }
-#endif
-
     return 0;
 }
 

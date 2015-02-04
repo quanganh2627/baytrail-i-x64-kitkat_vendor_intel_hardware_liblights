@@ -30,9 +30,4 @@ LOCAL_MODULE_TAGS := optional
 
 LOCAL_MODULE_OWNER := intel
 
-ifneq (,$(filter userdebug eng,$(TARGET_BUILD_VARIANT)))
-LOCAL_CFLAGS += -DALLOW_PERSIST_BRIGHTNESS_OVERRIDE=1
-LOCAL_SHARED_LIBRARIES += libcutils
-endif
-
 include $(BUILD_SHARED_LIBRARY)
